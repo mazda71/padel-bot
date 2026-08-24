@@ -298,14 +298,20 @@ async function main() {
     await login(page);
     await page.goto(PAGE_URL, { waitUntil: "load" });
 
-    // Skip dayIndex 0 (today) — same-day slots aren't worth sniping, finding
-    // free co-players on a few hours' notice is unrealistic.
-    for (let dayIndex = 1; dayIndex < DAYS_VISIBLE; dayIndex++) {
+    // We still never attempt a same-day booking (dayIndex 0) — finding free
+    // co-players on a few hours' notice is unrealistic — but we DO need to
+    // check today's existing bookings too, since the club's real 3-per-7-days
+    // window appears to run "today through today+6", not just the 6 days
+    // we can actually act on.
+    for (let dayIndex = 0; dayIndex < DAYS_VISIBLE; dayIndex++) {
       const dateStr = torontoDateOffset(dayIndex);
-      const alreadyBooked = await kvGet(`booked:${dateStr}`);
-      if (alreadyBooked) {
-        console.log(`${dateStr}: already booked, skipping`);
-        continue;
+
+      if (dayIndex > 0) {
+        const alreadyBooked = await kvGet(`booked:${dateStr}`);
+        if (alreadyBooked) {
+          console.log(`${dateStr}: already booked, skipping`);
+          continue;
+        }
       }
 
       let day;
@@ -324,6 +330,8 @@ async function main() {
           `${dateStr}: you already have a booking this day (${bookingsInWindow}/3 this week)`
         );
       }
+
+      if (dayIndex === 0) continue; // counted above, never attempted
 
       if (bookingsInWindow >= 3) {
         console.log(
