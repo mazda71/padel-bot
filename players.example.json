@@ -1,0 +1,8 @@
+{
+  "self": {
+    "record": { "memberNumber": "...", "encryptedMemberNumber": "...", "memberId": 0, "firstName": "...", "lastName": "..." }
+  },
+  "coPlayers": [
+    { "display": "Ms Lastname, Firstname ", "record": { "memberNumber": "...", "memberId": 0, "firstName": "...", "lastName": "..." } }
+  ]
+}

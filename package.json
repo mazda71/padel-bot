@@ -1,0 +1,12 @@
+{
+  "name": "padel-booking-bot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "book": "node book.js"
+  },
+  "dependencies": {
+    "playwright": "^1.47.0"
+  }
+}

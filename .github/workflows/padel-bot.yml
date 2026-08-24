@@ -1,0 +1,46 @@
+name: Padel Booking Bot
+
+on:
+  schedule:
+    # GitHub's minimum granularity is 5 minutes, and runs are often a bit
+    # late during busy periods — that's just how shared runners work.
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {} # lets you trigger a manual test run from the Actions tab
+
+jobs:
+  book:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Run booking check
+        env:
+          MEMBER_LOGIN: ${{ secrets.MEMBER_LOGIN }}
+          MEMBER_PASSWORD: ${{ secrets.MEMBER_PASSWORD }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          PLAYERS_JSON: ${{ secrets.PLAYERS_JSON }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_KV_NAMESPACE_ID: ${{ secrets.CF_KV_NAMESPACE_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+        run: npm run book
+
+      - name: Upload debug artifacts (only created on failure/error)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-artifacts-${{ github.run_id }}
+          path: artifacts/
+          if-no-files-found: ignore
+          retention-days: 7
