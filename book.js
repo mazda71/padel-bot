@@ -253,7 +253,17 @@ async function attemptBooking(page, dateStr, slot, coPlayers) {
 
   const saveButtonSelector = `[id="_activities_WAR_northstarportlet_:activityForm:j_idt2266"]`;
   await page.locator(saveButtonSelector).click();
-  await page.waitForTimeout(1500);
+
+  // The save is an in-place AJAX update, not a page navigation — the last
+  // screenshot showed it still mid-flight (loading spinner visible) after
+  // only 1.5s, so wait properly for either outcome text to actually appear
+  // rather than guessing a fixed short delay.
+  await page
+    .locator("body")
+    .filter({ hasText: /Reservation created successfully|error|already booked|no longer available/i })
+    .first()
+    .waitFor({ timeout: 20000 })
+    .catch(() => {}); // fall through to reading whatever's there either way
 
   const bodyText = await page.locator("body").innerText();
   const success = bodyText.includes("Reservation created successfully");
@@ -348,6 +358,11 @@ async function main() {
         } catch (err) {
           await captureDebug(page, `booking_error_${dateStr}_${key}`);
           console.error(`Booking attempt errored for ${dateStr} ${key}:`, err);
+          await sendTelegram(
+            `⚠️ Ran into an error trying to book ${dateStr} ${slot.start}-${slot.end}. ` +
+              `Worth checking the club site manually — it's unlikely to have gone ` +
+              `through, but the bot will retry automatically next run either way.`
+          );
           await page.goto(PAGE_URL, { waitUntil: "load" }); // reset before continuing
           continue;
         }
@@ -363,6 +378,11 @@ async function main() {
         } else {
           await captureDebug(page, `booking_failed_${dateStr}_${key}`);
           console.error(`Save did not confirm success for ${dateStr} ${key}`);
+          await sendTelegram(
+            `⚠️ Tried to book ${dateStr} ${slot.start}-${slot.end} but couldn't ` +
+              `confirm it went through. Worth checking the club site manually — ` +
+              `it may have actually succeeded despite this warning.`
+          );
         }
 
         // Reload the page fresh before trying the next slot/date, since the
