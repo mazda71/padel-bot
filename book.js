@@ -126,7 +126,7 @@ async function captureDebug(page, label) {
 // ---------------------------------------------------------------------------
 
 async function login(page) {
-  await page.goto(LOGIN_URL, { waitUntil: "networkidle" });
+  await page.goto(LOGIN_URL, { waitUntil: "load" });
 
   // Liferay's login taglib renders inputs with `name` matching the portlet's
   // parameter names — same values we already confirmed work via the HAR.
@@ -142,7 +142,7 @@ async function login(page) {
   await passwordInput.fill(process.env.MEMBER_PASSWORD);
 
   await Promise.all([
-    page.waitForNavigation({ waitUntil: "networkidle" }),
+    page.waitForNavigation({ waitUntil: "load" }),
     passwordInput.press("Enter"),
   ]);
 
@@ -164,7 +164,12 @@ async function login(page) {
 async function loadDay(page, dayIndex, dateStr) {
   const tabSelector = `[id="_activities_WAR_northstarportlet_:activityForm:j_idt76:${dayIndex}:j_idt78"]`;
   await page.locator(tabSelector).click();
-  await page.waitForLoadState("networkidle");
+  // Wait for the actual thing we need (slot cells re-rendering) rather than
+  // "networkidle", which can hang on pages with background polling scripts.
+  await page.waitForSelector("td.data-col.slot [data-start-time]", {
+    timeout: 15000,
+  });
+  await page.waitForTimeout(500); // let the AJAX swap fully settle
 
   const slots = await page.evaluate(() => {
     const cells = Array.from(document.querySelectorAll("td.data-col.slot"));
@@ -260,7 +265,7 @@ async function main() {
 
   try {
     await login(page);
-    await page.goto(PAGE_URL, { waitUntil: "networkidle" });
+    await page.goto(PAGE_URL, { waitUntil: "load" });
 
     // Skip dayIndex 0 (today) — same-day slots aren't worth sniping, finding
     // free co-players on a few hours' notice is unrealistic.
@@ -318,7 +323,7 @@ async function main() {
 
         // Reload the page fresh before trying the next slot/date, since the
         // reservation panel leaves the page in a different state.
-        await page.goto(PAGE_URL, { waitUntil: "networkidle" });
+        await page.goto(PAGE_URL, { waitUntil: "load" });
       }
     }
   } catch (err) {
