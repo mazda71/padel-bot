@@ -30,6 +30,8 @@ const PAGE_URL = `${BASE}/group/pages/padel-court-bookings`;
 const PREFERRED_SLOTS = [
   { start: "01:00 PM", end: "02:00 PM" },
   { start: "04:00 PM", end: "05:00 PM" },
+  { start: "02:00 PM", end: "03:00 PM" },
+  { start: "03:00 PM", end: "04:00 PM" },
 ];
 
 const DAYS_VISIBLE = 7; // tab bar shows today .. today+6
