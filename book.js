@@ -179,19 +179,27 @@ async function loadDay(page, dayIndex, dateStr) {
       if (!marker) return null;
       const start = marker.getAttribute("data-start-time");
       const end = marker.getAttribute("data-end-time");
-      const reserved = td.classList.contains("reserved");
+      const isOpen = td.classList.contains("open");
+      const isReserved = td.classList.contains("reserved");
       const playerIdsEl = td.querySelector("[data-player-ids]");
       const playerIds = playerIdsEl
         ? playerIdsEl.getAttribute("data-player-ids")
         : null;
-      return { start, end, reserved, playerIds };
+      return { start, end, isOpen, isReserved, playerIds };
     }).filter(Boolean);
   });
 
   const slotStatus = {};
   const bookedMemberIds = new Set();
   for (const s of slots) {
-    slotStatus[`${s.start}-${s.end}`] = s.reserved ? "reserved" : "open";
+    // Some cells are neither genuinely "open" (bookable, shows a calendar
+    // icon) nor "reserved" (has players) — e.g. buffer/blocked slots next
+    // to a WPR reservation. Only treat explicit "open" as bookable.
+    let status;
+    if (s.isReserved) status = "reserved";
+    else if (s.isOpen) status = "open";
+    else status = "blocked";
+    slotStatus[`${s.start}-${s.end}`] = status;
     if (s.playerIds) {
       for (const id of s.playerIds.split(",")) {
         const trimmed = id.trim();
@@ -252,6 +260,7 @@ async function attemptBooking(page, dateStr, slot, coPlayers) {
 
 async function main() {
   const players = JSON.parse(process.env.PLAYERS_JSON);
+  const selfMemberId = String(players.self.record.memberId);
   // Each co-player needs at least a lastName (for the search box) and
   // memberId (to check the day's already-booked list), matching the shape
   // already in players.secret.json.
@@ -260,6 +269,11 @@ async function main() {
     memberId: String(p.record.memberId),
     display: p.display,
   }));
+
+  // Club rule: max 3 padel bookings per member within a 7-day period. We
+  // enforce this by counting how many of the 7 visible days already show
+  // your own memberId in an existing reservation.
+  let bookingsInWindow = 0;
 
   const browser = await chromium.launch({ headless: true });
   const page = await browser.newPage();
@@ -287,6 +301,20 @@ async function main() {
         continue;
       }
       console.log(`${dateStr}: slot status =`, JSON.stringify(day.slotStatus));
+
+      if (day.bookedMemberIds.has(selfMemberId)) {
+        bookingsInWindow++;
+        console.log(
+          `${dateStr}: you already have a booking this day (${bookingsInWindow}/3 this week)`
+        );
+      }
+
+      if (bookingsInWindow >= 3) {
+        console.log(
+          `Already at the club's 3-bookings-per-7-days limit — skipping any new attempts.`
+        );
+        continue;
+      }
 
       for (const slot of PREFERRED_SLOTS) {
         const key = `${slot.start}-${slot.end}`;
@@ -319,6 +347,7 @@ async function main() {
 
         if (result.success) {
           await kvPut(`booked:${dateStr}`, "1");
+          bookingsInWindow++;
           await sendTelegram(
             `✅ Booked Padel 1 on ${dateStr}, ${slot.start}-${slot.end}\n` +
               `With: ${chosen.map((p) => p.display.trim()).join(", ")}`
