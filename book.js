@@ -208,7 +208,7 @@ async function loadDay(page, dayIndex, dateStr) {
 // ---------------------------------------------------------------------------
 
 async function attemptBooking(page, dateStr, slot, coPlayers) {
-  const slotSelector = `div[data-start-time="${slot.start}"][data-end-time="${slot.end}"]`;
+  const slotSelector = `td.data-col.slot:has(div[data-start-time="${slot.start}"][data-end-time="${slot.end}"])`;
   await page.locator(slotSelector).click();
   await page.waitForSelector("text=Reservation Information", {
     timeout: 10000,
