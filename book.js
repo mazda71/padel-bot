@@ -168,6 +168,7 @@ async function loadDay(page, dayIndex, dateStr) {
   // "networkidle", which can hang on pages with background polling scripts.
   await page.waitForSelector("td.data-col.slot [data-start-time]", {
     timeout: 15000,
+    state: "attached",
   });
   await page.waitForTimeout(500); // let the AJAX swap fully settle
 
@@ -277,7 +278,14 @@ async function main() {
         continue;
       }
 
-      const day = await loadDay(page, dayIndex, dateStr);
+      let day;
+      try {
+        day = await loadDay(page, dayIndex, dateStr);
+      } catch (err) {
+        await captureDebug(page, `loadDay_error_${dateStr}`);
+        console.error(`Failed to load ${dateStr}, skipping this date:`, err.message);
+        continue;
+      }
       console.log(`${dateStr}: slot status =`, JSON.stringify(day.slotStatus));
 
       for (const slot of PREFERRED_SLOTS) {
