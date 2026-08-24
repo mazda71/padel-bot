@@ -234,12 +234,18 @@ async function attemptBooking(page, dateStr, slot, coPlayers) {
     const searchInputSelector = `[id="_activities_WAR_northstarportlet_:activityForm:playersTable:${rowIndex}:player_input"]`;
     const searchInput = page.locator(searchInputSelector);
     await searchInput.waitFor({ timeout: 10000 });
-    await searchInput.fill(player.lastName);
+    await searchInput.click();
+    // PrimeFaces' remote autocomplete listens for real keystroke events to
+    // trigger its search — .fill() sets the value directly and doesn't
+    // dispatch those, so the dropdown never opens. Type it out for real.
+    await searchInput.pressSequentially(player.lastName, { delay: 120 });
 
-    // PrimeFaces autocomplete suggestion list
-    const suggestion = page.locator("li.ui-autocomplete-item", {
-      hasText: player.lastName,
-    }).first();
+    // Match any suggestion list item containing the name, rather than
+    // guessing at PrimeFaces' exact CSS class for this version of the site.
+    const suggestion = page
+      .locator("li")
+      .filter({ hasText: player.lastName })
+      .first();
     await suggestion.waitFor({ timeout: 10000 });
     await suggestion.click();
     await page.waitForTimeout(500);
@@ -342,6 +348,7 @@ async function main() {
         } catch (err) {
           await captureDebug(page, `booking_error_${dateStr}_${key}`);
           console.error(`Booking attempt errored for ${dateStr} ${key}:`, err);
+          await page.goto(PAGE_URL, { waitUntil: "load" }); // reset before continuing
           continue;
         }
 
