@@ -7,6 +7,10 @@ on:
     - cron: "*/5 * * * *"
   workflow_dispatch: {} # lets you trigger a manual test run from the Actions tab
 
+concurrency:
+  group: padel-booking-bot
+  cancel-in-progress: false # let an in-flight run finish rather than racing it
+
 jobs:
   book:
     runs-on: ubuntu-latest
