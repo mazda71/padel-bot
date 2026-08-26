@@ -2,3 +2,4 @@ node_modules/
 artifacts/
 *.log
 players.secret.json
+.wrangler/
