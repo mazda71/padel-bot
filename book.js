@@ -62,6 +62,13 @@ async function kvPut(key, value) {
   if (!resp.ok) throw new Error(`KV put failed: ${resp.status}`);
 }
 
+async function kvDelete(key) {
+  await fetch(`${CF_KV_BASE()}/${encodeURIComponent(key)}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${process.env.CF_API_TOKEN}` },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Telegram
 // ---------------------------------------------------------------------------
@@ -192,6 +199,7 @@ async function loadDay(page, dayIndex, dateStr) {
   });
 
   const slotStatus = {};
+  const slotPlayerIds = {}; // per-slot, unlike bookedMemberIds which is day-wide
   const bookedMemberIds = new Set();
   for (const s of slots) {
     // Some cells are neither genuinely "open" (bookable, shows a calendar
@@ -201,16 +209,16 @@ async function loadDay(page, dayIndex, dateStr) {
     if (s.isReserved) status = "reserved";
     else if (s.isOpen) status = "open";
     else status = "blocked";
-    slotStatus[`${s.start}-${s.end}`] = status;
-    if (s.playerIds) {
-      for (const id of s.playerIds.split(",")) {
-        const trimmed = id.trim();
-        if (trimmed) bookedMemberIds.add(trimmed);
-      }
-    }
+    const key = `${s.start}-${s.end}`;
+    slotStatus[key] = status;
+    const ids = s.playerIds
+      ? s.playerIds.split(",").map((id) => id.trim()).filter(Boolean)
+      : [];
+    slotPlayerIds[key] = ids;
+    for (const id of ids) bookedMemberIds.add(id);
   }
 
-  return { slotStatus, bookedMemberIds, dateStr };
+  return { slotStatus, slotPlayerIds, bookedMemberIds, dateStr };
 }
 
 // ---------------------------------------------------------------------------
@@ -344,10 +352,31 @@ async function main() {
 
       for (const slot of PREFERRED_SLOTS) {
         const key = `${slot.start}-${slot.end}`;
-        if (day.slotStatus[key] !== "open") {
-          console.log(`${dateStr} ${key}: not open, skipping`);
+        const ownedKey = `owned:${dateStr}:${key}`;
+
+        if (day.slotStatus[key] === "reserved") {
+          if ((day.slotPlayerIds[key] || []).includes(selfMemberId)) {
+            // Remember this is currently yours — if it later opens back up
+            // (you cancelled it), we'll recognize that and leave it alone
+            // instead of instantly re-booking it out from under you.
+            await kvPut(ownedKey, "1");
+          }
           continue;
         }
+
+        if (day.slotStatus[key] !== "open") {
+          console.log(`${dateStr} ${key}: not open (${day.slotStatus[key]}), skipping`);
+          continue;
+        }
+
+        const previouslyOwned = await kvGet(ownedKey).catch(() => null);
+        if (previouslyOwned) {
+          console.log(
+            `${dateStr} ${key}: this was your booking and got cancelled — leaving it alone`
+          );
+          continue;
+        }
+
         console.log(`${dateStr} ${key}: OPEN — attempting booking`);
 
         const available = coPlayerPool.filter(
@@ -370,15 +399,16 @@ async function main() {
           console.error(`Booking attempt errored for ${dateStr} ${key}:`, err);
           await sendTelegram(
             `⚠️ Ran into an error trying to book ${dateStr} ${slot.start}-${slot.end}. ` +
-              `Worth checking the club site manually — it's unlikely to have gone ` +
-              `through, but the bot will retry automatically next run either way.`
+              `Worth checking the club site manually — the bot will retry automatically ` +
+              `next run either way.`
           );
-          await page.goto(PAGE_URL, { waitUntil: "load" }); // reset before continuing
+          await page.goto(PAGE_URL, { waitUntil: "load" });
           continue;
         }
 
         if (result.success) {
           await kvPut(`booked:${dateStr}`, "1");
+          await kvPut(ownedKey, "1");
           bookingsInWindow++;
           await sendTelegram(
             `✅ Booked Padel 1 on ${dateStr}, ${slot.start}-${slot.end}\n` +
