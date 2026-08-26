@@ -316,14 +316,6 @@ async function main() {
     for (let dayIndex = 0; dayIndex < DAYS_VISIBLE; dayIndex++) {
       const dateStr = torontoDateOffset(dayIndex);
 
-      if (dayIndex > 0) {
-        const alreadyBooked = await kvGet(`booked:${dateStr}`);
-        if (alreadyBooked) {
-          console.log(`${dateStr}: already booked, skipping`);
-          continue;
-        }
-      }
-
       let day;
       try {
         day = await loadDay(page, dayIndex, dateStr);
@@ -407,7 +399,6 @@ async function main() {
         }
 
         if (result.success) {
-          await kvPut(`booked:${dateStr}`, "1");
           await kvPut(ownedKey, "1");
           bookingsInWindow++;
           await sendTelegram(
