@@ -90,18 +90,29 @@ async function sendTelegram(message) {
 // Date helpers (club is in Toronto)
 // ---------------------------------------------------------------------------
 
-function torontoDateOffset(offsetDays) {
-  const now = new Date();
+function getTorontoTodayParts() {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "America/Toronto",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
-  }).formatToParts(now);
-  const y = +parts.find((p) => p.type === "year").value;
-  const m = +parts.find((p) => p.type === "month").value;
-  const d = +parts.find((p) => p.type === "day").value;
-  const base = new Date(Date.UTC(y, m - 1, d));
+  }).formatToParts(new Date());
+  return {
+    y: +parts.find((p) => p.type === "year").value,
+    m: +parts.find((p) => p.type === "month").value,
+    d: +parts.find((p) => p.type === "day").value,
+  };
+}
+
+// IMPORTANT: takes a fixed reference ("today", captured once at the start of
+// the run) rather than calling `new Date()` itself. If a run happens to
+// straddle midnight (a real risk given GitHub's scheduling delays can run
+// 30-90+ minutes late), recomputing "now" mid-run could shift which real
+// calendar date a given dayIndex maps to partway through a single run —
+// which is exactly the kind of bug that could let a same-day slot slip
+// through the dayIndex-0 exclusion undetected.
+function dateOffsetFromToday(todayParts, offsetDays) {
+  const base = new Date(Date.UTC(todayParts.y, todayParts.m - 1, todayParts.d));
   base.setUTCDate(base.getUTCDate() + offsetDays);
   const mm = String(base.getUTCMonth() + 1).padStart(2, "0");
   const dd = String(base.getUTCDate()).padStart(2, "0");
@@ -170,7 +181,7 @@ async function login(page) {
 // already have a reservation that day (club allows 1 padel booking/day/member)
 // ---------------------------------------------------------------------------
 
-async function loadDay(page, dayIndex, dateStr) {
+async function loadDay(page, dayIndex) {
   const tabSelector = `[id="_activities_WAR_northstarportlet_:activityForm:j_idt76:${dayIndex}:j_idt78"]`;
   await page.locator(tabSelector).click();
   // Wait for the actual thing we need (slot cells re-rendering) rather than
@@ -180,6 +191,20 @@ async function loadDay(page, dayIndex, dateStr) {
     state: "attached",
   });
   await page.waitForTimeout(500); // let the AJAX swap fully settle
+
+  // CRITICAL: the tab bar is a Monday-anchored week view, NOT "today..today+6",
+  // so tab index N is NOT today+N days. Trusting that arithmetic is what caused
+  // same-day bookings and broken ownership memory. Always read the date the
+  // page is actually showing and treat that as the source of truth.
+  const dateStr = await page
+    .locator(`[id="_activities_WAR_northstarportlet_:activityForm:j_idt57_input"]`)
+    .inputValue();
+  if (!/^\d{2}\/\d{2}\/\d{4}$/.test(dateStr)) {
+    throw new Error(
+      `Could not read a valid date from the page after clicking tab ${dayIndex} ` +
+        `(got: ${JSON.stringify(dateStr)}). Refusing to guess which day this is.`
+    );
+  }
 
   const slots = await page.evaluate(() => {
     const cells = Array.from(document.querySelectorAll("td.data-col.slot"));
@@ -285,6 +310,12 @@ async function attemptBooking(page, dateStr, slot, coPlayers) {
 // ---------------------------------------------------------------------------
 
 async function main() {
+  // Captured once, immediately, before login/scanning (which can take
+  // minutes) — every date in this run is computed relative to this single
+  // fixed point, so a run straddling midnight can't shift what "today" means
+  // partway through.
+  const todayParts = getTorontoTodayParts();
+
   const players = JSON.parse(process.env.PLAYERS_JSON);
   const selfMemberId = String(players.self.record.memberId);
   // Each co-player needs at least a lastName (for the search box) and
@@ -301,6 +332,8 @@ async function main() {
   // your own memberId in an existing reservation.
   let bookingsInWindow = 0;
 
+  const todayStr = dateOffsetFromToday(todayParts, 0);
+
   const browser = await chromium.launch({ headless: true });
   const page = await browser.newPage();
 
@@ -308,23 +341,20 @@ async function main() {
     await login(page);
     await page.goto(PAGE_URL, { waitUntil: "load" });
 
-    // We still never attempt a same-day booking (dayIndex 0) — finding free
-    // co-players on a few hours' notice is unrealistic — but we DO need to
-    // check today's existing bookings too, since the club's real 3-per-7-days
-    // window appears to run "today through today+6", not just the 6 days
-    // we can actually act on.
+    // The tab bar is a Monday-anchored week view, so tab index does NOT map
+    // to today+N. We iterate the tabs, but let each one tell us what date it
+    // actually is, and decide based on that real date — never on the index.
     for (let dayIndex = 0; dayIndex < DAYS_VISIBLE; dayIndex++) {
-      const dateStr = torontoDateOffset(dayIndex);
-
       let day;
       try {
-        day = await loadDay(page, dayIndex, dateStr);
+        day = await loadDay(page, dayIndex);
       } catch (err) {
-        await captureDebug(page, `loadDay_error_${dateStr}`);
-        console.error(`Failed to load ${dateStr}, skipping this date:`, err.message);
+        await captureDebug(page, `loadDay_error_tab${dayIndex}`);
+        console.error(`Failed to load tab ${dayIndex}, skipping:`, err.message);
         continue;
       }
-      console.log(`${dateStr}: slot status =`, JSON.stringify(day.slotStatus));
+      const dateStr = day.dateStr; // real date, read from the page itself
+      console.log(`${dateStr} (tab ${dayIndex}): slot status =`, JSON.stringify(day.slotStatus));
 
       if (day.bookedMemberIds.has(selfMemberId)) {
         bookingsInWindow++;
@@ -333,7 +363,19 @@ async function main() {
         );
       }
 
-      if (dayIndex === 0) continue; // counted above, never attempted
+      // Never attempt a booking for today (or anything in the past) — compare
+      // REAL dates, not tab indices, since the tab bar is week-anchored and
+      // can include days that have already passed.
+      const [mm, dd, yyyy] = dateStr.split("/").map(Number);
+      const [tmm, tdd, tyyyy] = todayStr.split("/").map(Number);
+      const dateVal = yyyy * 10000 + mm * 100 + dd;
+      const todayVal = tyyyy * 10000 + tmm * 100 + tdd;
+      if (dateVal <= todayVal) {
+        console.log(
+          `${dateStr}: today or earlier — counted toward the weekly limit, never booked`
+        );
+        continue;
+      }
 
       if (bookingsInWindow >= 3) {
         console.log(
@@ -365,6 +407,15 @@ async function main() {
         if (previouslyOwned) {
           console.log(
             `${dateStr} ${key}: this was your booking and got cancelled — leaving it alone`
+          );
+          continue;
+        }
+
+        if (dateStr === todayStr) {
+          console.error(
+            `SAFETY GUARD: refusing to attempt a same-day booking for ${dateStr} ${key}. ` +
+              `This should be unreachable (today is filtered out above by real date ` +
+              `comparison) — if you see this, something is wrong with date handling.`
           );
           continue;
         }
