@@ -356,11 +356,36 @@ async function main() {
       const dateStr = day.dateStr; // real date, read from the page itself
       console.log(`${dateStr} (tab ${dayIndex}): slot status =`, JSON.stringify(day.slotStatus));
 
+      let alreadyBookedToday = false;
       if (day.bookedMemberIds.has(selfMemberId)) {
+        alreadyBookedToday = true;
         bookingsInWindow++;
         console.log(
           `${dateStr}: you already have a booking this day (${bookingsInWindow}/3 this week)`
         );
+      }
+
+      // Record every slot you're currently in as "yours", so if one later
+      // opens back up (you cancelled it) we recognize that and leave it
+      // alone rather than instantly re-booking it. This has to happen before
+      // the day-level skip below, otherwise days you're already booked on
+      // would never get their ownership recorded.
+      for (const slot of PREFERRED_SLOTS) {
+        const key = `${slot.start}-${slot.end}`;
+        if (
+          day.slotStatus[key] === "reserved" &&
+          (day.slotPlayerIds[key] || []).includes(selfMemberId)
+        ) {
+          await kvPut(`owned:${dateStr}:${key}`, "1");
+        }
+      }
+
+      // The club won't let you hold two reservations on the same day — trying
+      // returns "already on a reservation today" — so once you're booked that
+      // day, there's nothing more to do with it.
+      if (alreadyBookedToday) {
+        console.log(`${dateStr}: skipping — can't hold two reservations on one day`);
+        continue;
       }
 
       // Never attempt a booking for today (or anything in the past) — compare
@@ -387,16 +412,6 @@ async function main() {
       for (const slot of PREFERRED_SLOTS) {
         const key = `${slot.start}-${slot.end}`;
         const ownedKey = `owned:${dateStr}:${key}`;
-
-        if (day.slotStatus[key] === "reserved") {
-          if ((day.slotPlayerIds[key] || []).includes(selfMemberId)) {
-            // Remember this is currently yours — if it later opens back up
-            // (you cancelled it), we'll recognize that and leave it alone
-            // instead of instantly re-booking it out from under you.
-            await kvPut(ownedKey, "1");
-          }
-          continue;
-        }
 
         if (day.slotStatus[key] !== "open") {
           console.log(`${dateStr} ${key}: not open (${day.slotStatus[key]}), skipping`);
