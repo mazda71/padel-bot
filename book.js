@@ -302,7 +302,15 @@ async function attemptBooking(page, dateStr, slot, coPlayers) {
 
   const bodyText = await page.locator("body").innerText();
   const success = bodyText.includes("Reservation created successfully");
-  return { success, bodyText };
+
+  // The club enforces its own limits and tells us plainly when we've hit one.
+  // Trust that over our own counting — our weekly tally can drift out of sync
+  // with the club's rolling window, and blindly retrying every remaining slot
+  // just spams you with identical warnings (and hammers their server).
+  const atDayLimit = /already on a reservation|already have a reservation/i.test(bodyText);
+  const atWeekLimit = /3 bookings|three bookings|7 day period|7-day period/i.test(bodyText);
+
+  return { success, bodyText, atDayLimit, atWeekLimit };
 }
 
 // ---------------------------------------------------------------------------
@@ -331,6 +339,7 @@ async function main() {
   // enforce this by counting how many of the 7 visible days already show
   // your own memberId in an existing reservation.
   let bookingsInWindow = 0;
+  let hitWeekLimit = false;
 
   const todayStr = dateOffsetFromToday(todayParts, 0);
 
@@ -472,6 +481,24 @@ async function main() {
               `With: ${chosen.map((p) => p.display.trim()).join(", ")}`
           );
           break; // move to next date
+        } else if (result.atWeekLimit) {
+          // The club says we're at the 3-per-7-days cap. Believe it over our
+          // own tally and stop the whole run — every further attempt today
+          // would fail identically.
+          console.log(
+            `${dateStr} ${key}: club reports weekly booking limit reached — stopping this run.`
+          );
+          hitWeekLimit = true;
+          await page.goto(PAGE_URL, { waitUntil: "load" });
+          break;
+        } else if (result.atDayLimit) {
+          // Already have a reservation that day — no other slot on this date
+          // will work either, so move on rather than trying each one.
+          console.log(
+            `${dateStr} ${key}: club reports you're already booked this day — skipping the rest of this date.`
+          );
+          await page.goto(PAGE_URL, { waitUntil: "load" });
+          break;
         } else {
           await captureDebug(page, `booking_failed_${dateStr}_${key}`);
           console.error(`Save did not confirm success for ${dateStr} ${key}`);
@@ -486,6 +513,8 @@ async function main() {
         // reservation panel leaves the page in a different state.
         await page.goto(PAGE_URL, { waitUntil: "load" });
       }
+
+      if (hitWeekLimit) break; // stop scanning further dates entirely
     }
   } catch (err) {
     await captureDebug(page, "fatal_error");
