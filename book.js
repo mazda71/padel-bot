@@ -264,7 +264,7 @@ async function attemptBooking(page, dateStr, slot, coPlayers) {
   } catch (err) {
     const bodyText = await page.locator("body").innerText().catch(() => "");
     const atDayLimit = /already on a reservation|already have a reservation/i.test(bodyText);
-    const atWeekLimit = /3 bookings|three bookings|7 day period|7-day period/i.test(bodyText);
+    const atWeekLimit = /advanced reservations|3 bookings|three bookings|7[- ]day period|7 days in advance/i.test(bodyText);
     const notYetReleased =
       /not yet available|not available for booking|cannot be booked|too far in advance/i.test(
         bodyText
@@ -330,7 +330,7 @@ async function attemptBooking(page, dateStr, slot, coPlayers) {
   // with the club's rolling window, and blindly retrying every remaining slot
   // just spams you with identical warnings (and hammers their server).
   const atDayLimit = /already on a reservation|already have a reservation/i.test(bodyText);
-  const atWeekLimit = /3 bookings|three bookings|7 day period|7-day period/i.test(bodyText);
+  const atWeekLimit = /advanced reservations|3 bookings|three bookings|7[- ]day period|7 days in advance/i.test(bodyText);
 
   return { success, bodyText, atDayLimit, atWeekLimit };
 }
