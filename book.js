@@ -253,9 +253,31 @@ async function loadDay(page, dayIndex) {
 async function attemptBooking(page, dateStr, slot, coPlayers) {
   const slotSelector = `td.data-col.slot:has(div[data-start-time="${slot.start}"][data-end-time="${slot.end}"])`;
   await page.locator(slotSelector).click();
-  await page.waitForSelector("text=Reservation Information", {
-    timeout: 10000,
-  });
+
+  // The club often refuses to even OPEN the reservation panel — e.g. you're
+  // at a booking limit, or the date hasn't been released for booking yet
+  // (slots can look "open" in the grid before the club actually releases
+  // that day). Rather than letting this time out as a bare exception, read
+  // whatever the page is telling us and report it back as a clean rejection.
+  try {
+    await page.waitForSelector("text=Reservation Information", { timeout: 10000 });
+  } catch (err) {
+    const bodyText = await page.locator("body").innerText().catch(() => "");
+    const atDayLimit = /already on a reservation|already have a reservation/i.test(bodyText);
+    const atWeekLimit = /3 bookings|three bookings|7 day period|7-day period/i.test(bodyText);
+    const notYetReleased =
+      /not yet available|not available for booking|cannot be booked|too far in advance/i.test(
+        bodyText
+      );
+    return {
+      success: false,
+      panelNeverOpened: true,
+      bodyText,
+      atDayLimit,
+      atWeekLimit,
+      notYetReleased,
+    };
+  }
 
   for (let i = 0; i < coPlayers.length; i++) {
     const prevRow = i; // row 0 is self, always present already
@@ -464,23 +486,46 @@ async function main() {
         } catch (err) {
           await captureDebug(page, `booking_error_${dateStr}_${key}`);
           console.error(`Booking attempt errored for ${dateStr} ${key}:`, err);
-          await sendTelegram(
-            `⚠️ Ran into an error trying to book ${dateStr} ${slot.start}-${slot.end}. ` +
-              `Worth checking the club site manually — the bot will retry automatically ` +
-              `next run either way.`
-          );
+          // Only notify once per date+slot — a persistent problem otherwise
+          // fires an identical warning on every single run.
+          const warnedKey = `warned:${dateStr}:${key}`;
+          const alreadyWarned = await kvGet(warnedKey).catch(() => null);
+          if (!alreadyWarned) {
+            await kvPut(warnedKey, "1");
+            await sendTelegram(
+              `⚠️ Ran into an error trying to book ${dateStr} ${slot.start}-${slot.end}. ` +
+                `Worth checking the club site manually — the bot will keep retrying ` +
+                `quietly, and will let you know if it succeeds.`
+            );
+          }
           await page.goto(PAGE_URL, { waitUntil: "load" });
-          continue;
+          break; // other slots on this date will likely fail the same way
         }
 
         if (result.success) {
           await kvPut(ownedKey, "1");
+          await kvDelete(`warned:${dateStr}:${key}`);
           bookingsInWindow++;
           await sendTelegram(
             `✅ Booked Padel 1 on ${dateStr}, ${slot.start}-${slot.end}\n` +
               `With: ${chosen.map((p) => p.display.trim()).join(", ")}`
           );
           break; // move to next date
+        } else if (result.panelNeverOpened) {
+          // The club wouldn't even open the booking form. Most often this means
+          // the date isn't released for booking yet (slots can appear "open" in
+          // the grid hours before the club actually opens them — seemingly
+          // around 8 AM), or we're at a limit. Either way every other slot on
+          // this date will behave identically, so move on quietly rather than
+          // firing off four near-identical warnings.
+          console.log(
+            `${dateStr} ${key}: club wouldn't open the booking form ` +
+              `(dayLimit=${result.atDayLimit}, weekLimit=${result.atWeekLimit}, ` +
+              `notReleased=${result.notYetReleased}) — skipping the rest of this date.`
+          );
+          if (result.atWeekLimit) hitWeekLimit = true;
+          await page.goto(PAGE_URL, { waitUntil: "load" });
+          break;
         } else if (result.atWeekLimit) {
           // The club says we're at the 3-per-7-days cap. Believe it over our
           // own tally and stop the whole run — every further attempt today
